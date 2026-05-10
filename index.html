@@ -221,24 +221,81 @@
     font-size: 15px;
   }
 
-  textarea {
-    width: 100%;
-    padding: 11px 13px;
-    font-size: 14px;
+  .slot-editor {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .slot-fields {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex: 1;
+    flex-wrap: wrap;
+  }
+  .slot-date, .slot-start, .slot-end {
     font-family: inherit;
-    color: var(--fg);
-    background: #fff;
+    font-size: 14px;
+    padding: 8px 10px;
     border: 1px solid var(--line-strong);
-    border-radius: 8px;
+    border-radius: 6px;
+    background: #fff;
+    color: var(--fg);
     outline: none;
-    resize: vertical;
-    min-height: 160px;
-    line-height: 1.5;
     transition: border-color 0.15s, box-shadow 0.15s;
   }
-  textarea:focus {
+  .slot-date { flex: 1 1 150px; min-width: 140px; }
+  .slot-start, .slot-end { flex: 0 0 110px; }
+  .slot-date:focus, .slot-start:focus, .slot-end:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.10);
+  }
+  .slot-dash {
+    color: var(--muted);
+    padding: 0 2px;
+  }
+  .slot-row-actions { display: flex; gap: 4px; }
+  .icon-btn {
+    width: 36px;
+    height: 36px;
+    font-size: 16px;
+    line-height: 1;
+    border: 1px solid var(--line-strong);
+    background: #fff;
+    color: var(--fg);
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  .icon-btn:hover { background: var(--row-hover); }
+  .icon-btn.danger { font-size: 20px; font-weight: 300; }
+  .icon-btn.danger:hover {
+    background: #fee2e2;
+    border-color: #fca5a5;
+    color: var(--error);
+  }
+
+  .add-slot-btn {
+    margin-top: 4px;
+    width: 100%;
+    background: transparent;
+    border: 1px dashed var(--line-strong);
+    padding: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--muted);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  .add-slot-btn:hover {
+    background: var(--row-hover);
+    border-color: var(--fg);
+    color: var(--fg);
   }
 
   button.secondary {
@@ -320,8 +377,10 @@
       </div>
 
       <div class="field">
-        <label class="field-label" for="admin-slots">Time slots (one per line)</label>
-        <textarea id="admin-slots" placeholder="Mon May 18, 10:00–11:00 AM&#10;Tue May 19, 9:00–10:00 AM&#10;Wed May 20, 2:00–3:00 PM"></textarea>
+        <label class="field-label">Time slots</label>
+        <div id="admin-slots-list"></div>
+        <button type="button" class="add-slot-btn" id="admin-add-slot">+ Add another slot</button>
+        <p class="hint">Click 📅 next to a slot to open Google Calendar pre-filled with that date and time (use this once you know which slot won).</p>
       </div>
 
       <div class="admin-actions">
@@ -373,15 +432,14 @@
 </footer>
 
 <script>
-  // Default meeting shown when no ?c=... config is in the URL.
   const DEFAULT_MEETING_NAME = "Q3 planning sync";
   const DEFAULT_SLOTS = [
-    "Mon May 18, 10:00–11:00 AM",
-    "Mon May 18, 2:00–3:00 PM",
-    "Tue May 19, 9:00–10:00 AM",
-    "Tue May 19, 3:30–4:30 PM",
-    "Wed May 20, 11:00 AM–12:00 PM",
-    "Thu May 21, 1:00–2:00 PM",
+    { date: "2026-05-18", start: "10:00", end: "11:00" },
+    { date: "2026-05-18", start: "14:00", end: "15:00" },
+    { date: "2026-05-19", start: "09:00", end: "10:00" },
+    { date: "2026-05-19", start: "15:30", end: "16:30" },
+    { date: "2026-05-20", start: "11:00", end: "12:00" },
+    { date: "2026-05-21", start: "13:00", end: "14:00" },
   ];
 
   const params = new URLSearchParams(location.search);
@@ -393,12 +451,45 @@
     try {
       const cfg = JSON.parse(c);
       if (cfg && typeof cfg.name === 'string' && Array.isArray(cfg.slots)) {
-        return { name: cfg.name, slots: cfg.slots.filter(s => typeof s === 'string') };
+        return { name: cfg.name, slots: cfg.slots };
       }
     } catch (_) {}
     return null;
   }
 
+  // ---------- shared helpers ----------
+  function formatTime12(hhmm) {
+    if (!hhmm) return '';
+    const [h, m] = hhmm.split(':').map(Number);
+    const period = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${h12}:${String(m).padStart(2, '0')} ${period}`;
+  }
+
+  function formatSlot(slot) {
+    if (typeof slot === 'string') return slot; // legacy free-text slots
+    if (!slot || !slot.date) return '';
+    const [y, m, d] = slot.date.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const day = dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    return `${day}, ${formatTime12(slot.start)}–${formatTime12(slot.end)}`;
+  }
+
+  function gcalUrl(slot, title) {
+    if (!slot || !slot.date || !slot.start || !slot.end) return null;
+    const dateNoDash   = slot.date.replace(/-/g, '');
+    const startNoColon = slot.start.replace(':', '');
+    const endNoColon   = slot.end.replace(':', '');
+    const dStart = `${dateNoDash}T${startNoColon}00`;
+    const dEnd   = `${dateNoDash}T${endNoColon}00`;
+    const url = new URL('https://calendar.google.com/calendar/render');
+    url.searchParams.set('action', 'TEMPLATE');
+    url.searchParams.set('text', title);
+    url.searchParams.set('dates', `${dStart}/${dEnd}`);
+    return url.toString();
+  }
+
+  // ---------- routing ----------
   const adminView  = document.getElementById('admin-view');
   const formView   = document.getElementById('form-view');
   const thanksView = document.getElementById('thanks-view');
@@ -423,6 +514,8 @@
     const thanksMessage = document.getElementById('thanks-message');
 
     slots.forEach((slot, i) => {
+      const display = formatSlot(slot);
+      if (!display) return;
       const id = 'slot-' + i;
       const row = document.createElement('label');
       row.className = 'slot';
@@ -433,7 +526,7 @@
       cb.dataset.slot = String(i);
       const text = document.createElement('span');
       text.className = 'slot-text';
-      text.textContent = slot;
+      text.textContent = display;
       row.appendChild(cb);
       row.appendChild(text);
       cb.addEventListener('change', () => {
@@ -464,25 +557,34 @@
 
   // ---------- admin ----------
   function initAdmin() {
-    const nameInput  = document.getElementById('admin-name');
-    const slotsInput = document.getElementById('admin-slots');
-    const errorEl    = document.getElementById('admin-error');
-    const linkArea   = document.getElementById('admin-link-area');
-    const linkInput  = document.getElementById('admin-link');
-    const feedback   = document.getElementById('admin-copy-feedback');
+    const nameInput   = document.getElementById('admin-name');
+    const slotsListEl = document.getElementById('admin-slots-list');
+    const errorEl     = document.getElementById('admin-error');
+    const linkArea    = document.getElementById('admin-link-area');
+    const linkInput   = document.getElementById('admin-link');
+    const feedback    = document.getElementById('admin-copy-feedback');
+
+    function readSlot(row) {
+      return {
+        date:  row.querySelector('.slot-date').value,
+        start: row.querySelector('.slot-start').value,
+        end:   row.querySelector('.slot-end').value,
+      };
+    }
+
+    function readSlots() {
+      return Array.from(slotsListEl.querySelectorAll('.slot-editor'))
+        .map(readSlot)
+        .filter(s => s.date && s.start && s.end);
+    }
 
     function readForm() {
-      const name = nameInput.value.trim();
-      const slots = slotsInput.value
-        .split('\n')
-        .map(s => s.trim())
-        .filter(Boolean);
-      return { name, slots };
+      return { name: nameInput.value.trim(), slots: readSlots() };
     }
 
     function validate({ name, slots }) {
       if (!name) return "Please enter a meeting name.";
-      if (slots.length === 0) return "Please enter at least one time slot.";
+      if (slots.length === 0) return "Please add at least one slot with a date, start time, and end time.";
       return null;
     }
 
@@ -493,13 +595,81 @@
       return url.toString();
     }
 
+    function makeSlotRow(initial) {
+      const row = document.createElement('div');
+      row.className = 'slot-editor';
+
+      const fields = document.createElement('div');
+      fields.className = 'slot-fields';
+
+      const dateInput = document.createElement('input');
+      dateInput.type = 'date';
+      dateInput.className = 'slot-date';
+      if (initial && initial.date) dateInput.value = initial.date;
+
+      const startInput = document.createElement('input');
+      startInput.type = 'time';
+      startInput.className = 'slot-start';
+      if (initial && initial.start) startInput.value = initial.start;
+
+      const dash = document.createElement('span');
+      dash.className = 'slot-dash';
+      dash.textContent = '–';
+
+      const endInput = document.createElement('input');
+      endInput.type = 'time';
+      endInput.className = 'slot-end';
+      if (initial && initial.end) endInput.value = initial.end;
+
+      fields.appendChild(dateInput);
+      fields.appendChild(startInput);
+      fields.appendChild(dash);
+      fields.appendChild(endInput);
+
+      const actions = document.createElement('div');
+      actions.className = 'slot-row-actions';
+
+      const calBtn = document.createElement('button');
+      calBtn.type = 'button';
+      calBtn.className = 'icon-btn';
+      calBtn.title = 'Schedule in Google Calendar';
+      calBtn.textContent = '📅';
+      calBtn.addEventListener('click', () => {
+        const slot = readSlot(row);
+        if (!slot.date || !slot.start || !slot.end) {
+          errorEl.textContent = "Set the date, start, and end time on this slot before scheduling.";
+          return;
+        }
+        errorEl.textContent = '';
+        const title = nameInput.value.trim() || 'Meeting';
+        window.open(gcalUrl(slot, title), '_blank', 'noopener');
+      });
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'icon-btn danger';
+      removeBtn.title = 'Remove';
+      removeBtn.textContent = '×';
+      removeBtn.addEventListener('click', () => {
+        row.remove();
+        if (slotsListEl.children.length === 0) makeSlotRow();
+      });
+
+      actions.appendChild(calBtn);
+      actions.appendChild(removeBtn);
+
+      row.appendChild(fields);
+      row.appendChild(actions);
+      slotsListEl.appendChild(row);
+      return row;
+    }
+
+    document.getElementById('admin-add-slot').addEventListener('click', () => makeSlotRow());
+
     document.getElementById('admin-generate').addEventListener('click', () => {
       const cfg = readForm();
       const err = validate(cfg);
-      if (err) {
-        errorEl.textContent = err;
-        return;
-      }
+      if (err) { errorEl.textContent = err; return; }
       errorEl.textContent = '';
       linkInput.value = buildVoterUrl(cfg);
       linkArea.classList.remove('hidden');
@@ -510,10 +680,7 @@
     document.getElementById('admin-preview').addEventListener('click', () => {
       const cfg = readForm();
       const err = validate(cfg);
-      if (err) {
-        errorEl.textContent = err;
-        return;
-      }
+      if (err) { errorEl.textContent = err; return; }
       errorEl.textContent = '';
       window.open(buildVoterUrl(cfg), '_blank', 'noopener');
     });
@@ -529,6 +696,16 @@
       feedback.textContent = "Link copied to clipboard.";
       setTimeout(() => { feedback.textContent = ''; }, 2000);
     });
+
+    // Pre-populate the form if admin returns with ?admin&c=... (e.g. to schedule the winning slot later)
+    const existing = loadConfigFromUrl();
+    if (existing) {
+      nameInput.value = existing.name;
+      existing.slots.forEach(slot => {
+        if (slot && typeof slot === 'object' && slot.date) makeSlotRow(slot);
+      });
+    }
+    if (slotsListEl.children.length === 0) makeSlotRow();
   }
 </script>
 </body>
