@@ -221,6 +221,73 @@
     font-size: 15px;
   }
 
+  textarea {
+    width: 100%;
+    padding: 11px 13px;
+    font-size: 14px;
+    font-family: inherit;
+    color: var(--fg);
+    background: #fff;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    outline: none;
+    resize: vertical;
+    min-height: 160px;
+    line-height: 1.5;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.10);
+  }
+
+  button.secondary {
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 500;
+    padding: 12px 20px;
+    border-radius: 8px;
+    background: #fff;
+    color: var(--fg);
+    border: 1px solid var(--line-strong);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button.secondary:hover { background: var(--row-hover); }
+
+  .admin-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 4px;
+  }
+  .admin-actions button.submit { width: auto; flex: 1; }
+
+  .link-area {
+    margin-top: 28px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+  }
+  .link-row {
+    display: flex;
+    gap: 8px;
+  }
+  .link-row input[type="text"] {
+    font-size: 13px;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  .link-row button { flex-shrink: 0; }
+  .hint {
+    font-size: 13px;
+    color: var(--muted);
+    margin: 10px 0 0;
+  }
+  .copy-feedback {
+    color: var(--success);
+    font-size: 13px;
+    margin-top: 8px;
+    min-height: 18px;
+  }
+
   .hidden { display: none; }
 </style>
 </head>
@@ -242,6 +309,38 @@
 
 <main>
   <div class="card">
+    <div id="admin-view" class="hidden">
+      <p class="eyebrow">Admin · configure meeting</p>
+      <h1>New availability poll</h1>
+      <p class="subtitle">Fill in the details, then generate a link to share with voters. The meeting name and slots are encoded in the link — no deploy required.</p>
+
+      <div class="field">
+        <label class="field-label" for="admin-name">Meeting name</label>
+        <input type="text" id="admin-name" placeholder="e.g. Q3 planning sync" />
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="admin-slots">Time slots (one per line)</label>
+        <textarea id="admin-slots" placeholder="Mon May 18, 10:00–11:00 AM&#10;Tue May 19, 9:00–10:00 AM&#10;Wed May 20, 2:00–3:00 PM"></textarea>
+      </div>
+
+      <div class="admin-actions">
+        <button type="button" class="submit" id="admin-generate">Generate voter link</button>
+        <button type="button" class="secondary" id="admin-preview">Preview as voter</button>
+      </div>
+      <div class="error" id="admin-error"></div>
+
+      <div id="admin-link-area" class="link-area hidden">
+        <label class="field-label">Voter link</label>
+        <div class="link-row">
+          <input type="text" id="admin-link" readonly />
+          <button type="button" class="secondary" id="admin-copy">Copy</button>
+        </div>
+        <p class="hint">Send this link to anyone you want to vote. They'll see only the form — not this admin view.</p>
+        <div class="copy-feedback" id="admin-copy-feedback"></div>
+      </div>
+    </div>
+
     <div id="form-view">
       <p class="eyebrow">Availability poll</p>
       <h1 id="meeting-title"></h1>
@@ -274,12 +373,9 @@
 </footer>
 
 <script>
-  // ============================================================
-  // EDIT THESE FOR EACH MEETING
-  // ============================================================
-  const MEETING_NAME = "Q3 planning sync";
-
-  const SLOTS = [
+  // Default meeting shown when no ?c=... config is in the URL.
+  const DEFAULT_MEETING_NAME = "Q3 planning sync";
+  const DEFAULT_SLOTS = [
     "Mon May 18, 10:00–11:00 AM",
     "Mon May 18, 2:00–3:00 PM",
     "Tue May 19, 9:00–10:00 AM",
@@ -287,56 +383,153 @@
     "Wed May 20, 11:00 AM–12:00 PM",
     "Thu May 21, 1:00–2:00 PM",
   ];
-  // ============================================================
 
-  document.title = MEETING_NAME + " — availability";
-  document.getElementById('meeting-title').textContent = MEETING_NAME;
+  const params = new URLSearchParams(location.search);
+  const isAdmin = params.has('admin');
 
-  const slotsEl = document.getElementById('slots');
-  const nameEl = document.getElementById('name');
-  const errorEl = document.getElementById('error');
-  const formView = document.getElementById('form-view');
+  function loadConfigFromUrl() {
+    const c = params.get('c');
+    if (!c) return null;
+    try {
+      const cfg = JSON.parse(c);
+      if (cfg && typeof cfg.name === 'string' && Array.isArray(cfg.slots)) {
+        return { name: cfg.name, slots: cfg.slots.filter(s => typeof s === 'string') };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  const adminView  = document.getElementById('admin-view');
+  const formView   = document.getElementById('form-view');
   const thanksView = document.getElementById('thanks-view');
-  const thanksMessage = document.getElementById('thanks-message');
 
-  SLOTS.forEach((slot, i) => {
-    const id = 'slot-' + i;
-    const row = document.createElement('label');
-    row.className = 'slot';
-    row.htmlFor = id;
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.id = id;
-    cb.dataset.slot = String(i);
-    const text = document.createElement('span');
-    text.className = 'slot-text';
-    text.textContent = slot;
-    row.appendChild(cb);
-    row.appendChild(text);
-    cb.addEventListener('change', () => {
-      row.classList.toggle('selected', cb.checked);
-    });
-    slotsEl.appendChild(row);
-  });
-
-  document.getElementById('submit-btn').addEventListener('click', () => {
-    const name = nameEl.value.trim();
-    if (!name) {
-      errorEl.textContent = "Please enter your name.";
-      nameEl.focus();
-      return;
-    }
-    errorEl.textContent = '';
-
-    const selectedCount = slotsEl.querySelectorAll('input[type="checkbox"]:checked').length;
-    thanksMessage.textContent = selectedCount === 0
-      ? `Thanks, ${name}. We've noted that none of the proposed times work for you.`
-      : `Thanks, ${name}. Your ${selectedCount === 1 ? 'availability has' : 'availabilities have'} been recorded.`;
-
+  if (isAdmin) {
+    adminView.classList.remove('hidden');
     formView.classList.add('hidden');
-    thanksView.classList.remove('hidden');
-    window.scrollTo(0, 0);
-  });
+    initAdmin();
+  } else {
+    const cfg = loadConfigFromUrl() || { name: DEFAULT_MEETING_NAME, slots: DEFAULT_SLOTS };
+    initVoter(cfg);
+  }
+
+  // ---------- voter ----------
+  function initVoter({ name: meetingName, slots }) {
+    document.title = meetingName + " — availability";
+    document.getElementById('meeting-title').textContent = meetingName;
+
+    const slotsEl = document.getElementById('slots');
+    const nameEl  = document.getElementById('name');
+    const errorEl = document.getElementById('error');
+    const thanksMessage = document.getElementById('thanks-message');
+
+    slots.forEach((slot, i) => {
+      const id = 'slot-' + i;
+      const row = document.createElement('label');
+      row.className = 'slot';
+      row.htmlFor = id;
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.id = id;
+      cb.dataset.slot = String(i);
+      const text = document.createElement('span');
+      text.className = 'slot-text';
+      text.textContent = slot;
+      row.appendChild(cb);
+      row.appendChild(text);
+      cb.addEventListener('change', () => {
+        row.classList.toggle('selected', cb.checked);
+      });
+      slotsEl.appendChild(row);
+    });
+
+    document.getElementById('submit-btn').addEventListener('click', () => {
+      const name = nameEl.value.trim();
+      if (!name) {
+        errorEl.textContent = "Please enter your name.";
+        nameEl.focus();
+        return;
+      }
+      errorEl.textContent = '';
+
+      const selectedCount = slotsEl.querySelectorAll('input[type="checkbox"]:checked').length;
+      thanksMessage.textContent = selectedCount === 0
+        ? `Thanks, ${name}. We've noted that none of the proposed times work for you.`
+        : `Thanks, ${name}. Your ${selectedCount === 1 ? 'availability has' : 'availabilities have'} been recorded.`;
+
+      formView.classList.add('hidden');
+      thanksView.classList.remove('hidden');
+      window.scrollTo(0, 0);
+    });
+  }
+
+  // ---------- admin ----------
+  function initAdmin() {
+    const nameInput  = document.getElementById('admin-name');
+    const slotsInput = document.getElementById('admin-slots');
+    const errorEl    = document.getElementById('admin-error');
+    const linkArea   = document.getElementById('admin-link-area');
+    const linkInput  = document.getElementById('admin-link');
+    const feedback   = document.getElementById('admin-copy-feedback');
+
+    function readForm() {
+      const name = nameInput.value.trim();
+      const slots = slotsInput.value
+        .split('\n')
+        .map(s => s.trim())
+        .filter(Boolean);
+      return { name, slots };
+    }
+
+    function validate({ name, slots }) {
+      if (!name) return "Please enter a meeting name.";
+      if (slots.length === 0) return "Please enter at least one time slot.";
+      return null;
+    }
+
+    function buildVoterUrl({ name, slots }) {
+      const url = new URL(location.href);
+      url.searchParams.delete('admin');
+      url.searchParams.set('c', JSON.stringify({ name, slots }));
+      return url.toString();
+    }
+
+    document.getElementById('admin-generate').addEventListener('click', () => {
+      const cfg = readForm();
+      const err = validate(cfg);
+      if (err) {
+        errorEl.textContent = err;
+        return;
+      }
+      errorEl.textContent = '';
+      linkInput.value = buildVoterUrl(cfg);
+      linkArea.classList.remove('hidden');
+      feedback.textContent = '';
+      linkInput.select();
+    });
+
+    document.getElementById('admin-preview').addEventListener('click', () => {
+      const cfg = readForm();
+      const err = validate(cfg);
+      if (err) {
+        errorEl.textContent = err;
+        return;
+      }
+      errorEl.textContent = '';
+      window.open(buildVoterUrl(cfg), '_blank', 'noopener');
+    });
+
+    document.getElementById('admin-copy').addEventListener('click', async () => {
+      if (!linkInput.value) return;
+      try {
+        await navigator.clipboard.writeText(linkInput.value);
+      } catch (_) {
+        linkInput.select();
+        try { document.execCommand('copy'); } catch (_) {}
+      }
+      feedback.textContent = "Link copied to clipboard.";
+      setTimeout(() => { feedback.textContent = ''; }, 2000);
+    });
+  }
 </script>
 </body>
 </html>
